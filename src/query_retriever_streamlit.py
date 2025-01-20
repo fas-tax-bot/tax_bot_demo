@@ -43,7 +43,7 @@ prompt = PromptTemplate(
     template=prompt_text  # 텍스트 파일에서 읽어온 프롬프트 텍스트
 )
 
-llm = ChatOpenAI(model_name="gpt-4o", temperature=0.5)
+llm = ChatOpenAI(model_name="gpt-4o", temperature=0)
 rag_chain = (
     {"context": retriever, "question": RunnablePassthrough()}
     | prompt
