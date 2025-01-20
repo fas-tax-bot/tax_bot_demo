@@ -52,9 +52,9 @@ rag_chain = (
 )
 
 # Streamlit 앱 설정
-st.set_page_config(page_title="RAG 기반 챗봇", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="세무사 챗봇", page_icon="🤖", layout="wide")
 
-st.title("📄 RAG 기반 세무사 챗봇")
+st.title("📄 세무사 챗봇")
 st.write("질문을 입력하면 관련 문서를 검색하고 답변을 생성합니다.")
 
 # 사용자 입력 폼
