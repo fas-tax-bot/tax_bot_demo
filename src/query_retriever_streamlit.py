@@ -83,5 +83,5 @@ if submit_button and question:
         for idx, doc in enumerate(retrieved_documents, 1):
             with st.expander(f"문서 {idx}: {doc.metadata.get('제목', '제목 없음')}"):
                 st.write(f"**제목:** {doc.metadata.get('제목', '없음')}")
-                st.write(f"**본문:** {doc.page_content}")
+                st.write(f"**본문:** {doc.metadata.get('본문_원본', '없음')}")
                 st.write(f"**출처:** {doc.metadata.get('source', '출처 없음')}")
