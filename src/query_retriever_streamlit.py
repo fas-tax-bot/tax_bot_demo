@@ -15,7 +15,7 @@ load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 os.environ["OPENAI_API_KEY"] = api_key
 if not api_key:
-    raise ValueError("OPENAI_API_KEY가 설정되지 않았습니다. ㅈㅈ111111.env 파일을 확인하세요.")
+    raise ValueError("OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.")
 
 # 프롬프트 파일 경로 설정
 prompt_file_path = "src/prompt/prompt.txt"
