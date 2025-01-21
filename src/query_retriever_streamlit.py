@@ -15,7 +15,7 @@ load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 os.environ["OPENAI_API_KEY"] = api_key
 if not api_key:
-    raise ValueError("OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.")
+    raise ValueError("OPENAI_API_KEY가 설정되지 않았습니다. ㅈㅈ111111.env 파일을 확인하세요.")
 
 # 프롬프트 파일 경로 설정
 prompt_file_path = "src/prompt/prompt.txt"
@@ -27,6 +27,7 @@ def load_prompt_from_file(file_path):
 
 # 파일에서 프롬프트 텍스트 읽기
 prompt_text = load_prompt_from_file(prompt_file_path)
+
 
 # 임베딩 모델 생성 - text-embedding-3-small 사용
 embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
