@@ -36,6 +36,7 @@ for file, sheets in excel_files:
             # content는 제목과 본문_원본을 포함
             content = f"제목: {row['제목']}\n본문: {row['본문_원본']}"
             # print(f"content {content}")
+            source = f"" if "data_source" in file else f"{file} - {sheet}"
             
             # metadata에 모든 헤더 정보를 포함
             metadata = {
@@ -43,7 +44,7 @@ for file, sheets in excel_files:
                 "문서명": row["문서명"],
                 "제목": row["제목"],
                 "본문_원본": row["본문_원본"],
-                "source": f"{file} - {sheet}"
+                "source": source
             }
             
             documents.append(Document(page_content=content, metadata=metadata))
