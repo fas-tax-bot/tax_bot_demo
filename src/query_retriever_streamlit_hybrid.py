@@ -13,20 +13,17 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
 
+# -----------------------------------------------------------------------------
+# 1) 설정 상수
+# -----------------------------------------------------------------------------
+ALPHA = 0   # BM25와 FAISS 비중 (0 => FAISS 100%, 1 => BM25 100%)
+RAG_TOP_K = 5      # 최종적으로 LLM(RAG)에 전달할 문서 개수
+BM25_TOP_K = RAG_TOP_K // 2     # BM25 검색에서 상위 몇 개를 선택할지
+FAISS_TOP_K = 10    # FAISS(MMR)에서 상위 몇 개를 선택할지
+FINAL_VIEWABLE_DOCUMENT_SCORE = 0.5 # 보여지는 문서의 기준점수
 
 # -----------------------------------------------------------------------------
-# 1) 설정 상수들
-# -----------------------------------------------------------------------------
-# ALPHA: BM25와 FAISS 가중치 (0=FAISS 100%, 1=BM25 100%)
-ALPHA = 0.5
-
-# FAISS 스코어(Inner Product) 활용 시, 0~1 사이 값이 나올 수도 있고
-# BM25 스코어는 0~10 또는 그 이상일 수도 있음 (문서 길이에 따라 상이)
-# 실제로는 두 값을 정규화하는 편이 좋습니다(예: 0~1로)
-# 여기서는 간단히 raw 점수에만 곱해서 합산
-
-# -----------------------------------------------------------------------------
-# 2) .env 파일 로드 & OpenAI API 설정
+# 2) .env 로드 & OpenAI API
 # -----------------------------------------------------------------------------
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
@@ -38,15 +35,14 @@ os.environ["OPENAI_API_KEY"] = api_key
 # 3) Prompt 파일 로드
 # -----------------------------------------------------------------------------
 prompt_file_path = "src/prompt/prompt.txt"
-def load_prompt_from_file(file_path):
-    with open(file_path, "r", encoding="utf-8") as file:
-        return file.read()
+def load_prompt_from_file(file_path: str) -> str:
+    with open(file_path, "r", encoding="utf-8") as f:
+        return f.read()
 
 prompt_text = load_prompt_from_file(prompt_file_path)
 
 # -----------------------------------------------------------------------------
-# 4) FAISS 벡터 저장소 로드
-#    - Inner Product 모드 강제
+# 4) FAISS 로드 (METRIC_INNER_PRODUCT 강제)
 # -----------------------------------------------------------------------------
 embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
 
@@ -55,79 +51,104 @@ vectorstore = FAISS.load_local(
     embeddings=embedding_model,
     allow_dangerous_deserialization=True
 )
-# metric_type 설정 (내적)
 vectorstore.index.metric_type = faiss.METRIC_INNER_PRODUCT
 
 # -----------------------------------------------------------------------------
-# 5) BM25 인덱스 구성 (엑셀의 "제목 + 본문_원본")
+# 5) BM25 인덱스 (엑셀: "제목 + 본문_원본")
 # -----------------------------------------------------------------------------
 excel_file = "data_source/세무사 데이터전처리_20250116.xlsx"
 df = pd.read_excel(excel_file)
 
-# BM25 문서 리스트: 문자열 형태
 bm25_documents = df.apply(lambda row: f"{row['제목']} {row['본문_원본']}", axis=1).tolist()
 bm25_tokenized_docs = [doc.split() for doc in bm25_documents]
 bm25 = BM25Okapi(bm25_tokenized_docs)
 
 # -----------------------------------------------------------------------------
-# 6) 하이브리드 검색 함수
-#    - "BM25 top-k" & "FAISS top-k" => 점수를 합산
+# 정규화를 위한 함수 (Min-Max)
 # -----------------------------------------------------------------------------
-def hybrid_search(query: str, k=5):
-    """하이브리드 검색을 수행해 (문자열, hybrid_score) 리스트를 반환."""
-    tokenized_query = query.split()
+def min_max_normalize(value, min_v, max_v):
+    if max_v == min_v:
+        return 0.0
+    return (value - min_v) / (max_v - min_v)
 
-    # 1) BM25 검색
-    bm25_scores = bm25.get_scores(tokenized_query)
-    # 정렬하여 상위 k
-    # => [(문서텍스트, bm25_score), ...]
+# -----------------------------------------------------------------------------
+# 6) 하이브리드 검색 함수
+#    BM25_TOP_K + FAISS_TOP_K => 점수 합산 => 상위 RAG_TOP_K 문서 반환
+#    여기서, BM25 점수를 0~1 범위로 정규화
+# -----------------------------------------------------------------------------
+def hybrid_search(query: str):
+    """
+    Returns a list of (doc_text, final_score) sorted by descending score.
+    """
+    print(f" - 입력: {query}")
+    # 1) 전체 문서 BM25 점수 구하기
+    tokenized_query = query.split()
+    bm25_scores = bm25.get_scores(tokenized_query)  # 모든 문서 BM25 점수
+    doc_bm25_map = dict(zip(bm25_documents, bm25_scores))
+    
+    # 2) BM25 점수 Min-Max 정규화 (0~1)
+    min_b = min(doc_bm25_map.values())
+    max_b = max(doc_bm25_map.values()) if doc_bm25_map else 0.0
+    
+    normalized_bm25_map = {
+        doc: min_max_normalize(score, min_b, max_b)
+        for doc, score in doc_bm25_map.items()
+    }
+
+    # 3) 그중 상위 k => [(문서텍스트, 정규화된BM25점수), ...]
     bm25_top = sorted(
-        zip(bm25_documents, bm25_scores),
+        normalized_bm25_map.items(),
         key=lambda x: x[1],
         reverse=True
-    )[:k]
+    )[:BM25_TOP_K]
 
-    # 2) FAISS 검색
-    # => [(Document, distance), ...]  distance: 내적값에 대한 (1 - similarity) 또는 유사
-    faiss_results_with_scores = vectorstore.similarity_search_with_score(query, k=k)
-    # 실제 langchain_community.vectorstores.FAISS 는 distance가 "1 - cos_sim" 형태일 수도 있습니다.
-    # 그러나 위에서 metric_type=METRIC_INNER_PRODUCT 를 강제했으므로
-    # distance == 1 - inner_product or just the raw distance? 실제 구현 따라 다름
-    # 일단 distance가 "낮을수록 유사"라고 가정 -> similarity = (1 - distance)
-    # (만약 distance가 raw inner product라면, 아래 로직을 조정해야 합니다.)
+    # 4) FAISS (MMR) 검색 (with score)
+    # faiss_results_with_scores = vectorstore.similarity_search_with_score(
+    #     query,
+    #     search_type="mmr",
+    #     search_kwargs={
+    #         "k": FAISS_TOP_K,
+    #         "fetch_k": 10,
+    #         "lambda_mult": 0.9
+    #     }
+    # )
+    faiss_results_with_scores = vectorstore.similarity_search_with_score(
+        query,
+        k=FAISS_TOP_K
+    )
 
-    # 3) 하이브리드 점수 합산
-    # - doc_score_map: { "문서텍스트": bm25_score (raw), ... }
+    # 5) 하이브리드 점수 합산
     doc_score_map = {}
 
-    # (A) 먼저 bm25_score를 저장(알파 곱하지 X)
-    for doc_text, bm25_score_value in bm25_top:
-        doc_score_map[doc_text] = bm25_score_value
+    # (A) 먼저 BM25 상위 k개 문서를 doc_score_map 에 반영
+    for doc_text, bm25_val in bm25_top:
+        doc_score_map[doc_text] = bm25_val
+        print(f"[BM25] normalized={bm25_val:.3f} | doc_text={doc_text[:20]}...")
 
-    # (B) FAISS 결과와 합산
-    #     Document.page_content를 문자열 키로 사용
-    for doc_obj, distance_value in faiss_results_with_scores:
-        # FAISS가 내적 유사도라고 가정하면,
-        # similarity = (1 - distance) (만약 distance=1 - inner_product)
-        # 또는 "distance" 자체가 inner_product 점수면, similarity=distance
-        similarity = 1.0 - distance_value  # 일단 이런 식으로 가정
-
+    # (B) FAISS 결과 (distance=낮을수록 유사) => similarity=1 - distance
+    faiss_results_with_scores_sorted = sorted(
+        faiss_results_with_scores, key=lambda x: 1.0 - x[1], reverse=True
+    )
+    
+    for doc_obj, distance_value in faiss_results_with_scores_sorted:
         doc_text = doc_obj.page_content
-        bm25_s = doc_score_map.get(doc_text, 0.0)  # 없으면 0
-        # 최종 = alpha * bm25_s + (1-alpha)*similarity
-        # 여기서 alpha=BM25 비중, (1-alpha)=FAISS 비중
-        final_score = ALPHA * bm25_s + (1.0 - ALPHA) * similarity
+        similarity = 1.0 - distance_value
+        similarity = max(0.0, similarity)  # 음수 보정
+        if similarity < 0.0:
+            similarity = 0.0
+        
+        bm25_s = doc_score_map.get(doc_text, 0.0)  # 만약 BM25 상위 k에 없으면 0
+        final_score = ALPHA * bm25_s + (1 - ALPHA) * similarity
         doc_score_map[doc_text] = final_score
 
-    # 4) 하이브리드 점수로 상위 k 추출
-    # doc_score_map: { "문서텍스트": 최종점수, ... }
-    sorted_docs = sorted(doc_score_map.items(), key=lambda x: x[1], reverse=True)[:k]
+        print(f"[FAISS] bm25_s={bm25_s:.3f} | sim={similarity:.3f} => final={final_score:.3f} | doc_text={doc_text[:20]}...")
 
+    # 6) 상위 K 뽑아서 반환
+    sorted_docs = sorted(doc_score_map.items(), key=lambda x: x[1], reverse=True)[:RAG_TOP_K]
     return sorted_docs
 
 # -----------------------------------------------------------------------------
 # 7) RAG(LLM QA) 구성
-#    - 하이브리드 검색 결과를 직접 LLM에 전달
 # -----------------------------------------------------------------------------
 prompt = PromptTemplate(
     input_variables=["question", "context"],
@@ -136,55 +157,59 @@ prompt = PromptTemplate(
 llm = ChatOpenAI(model_name="gpt-4o", temperature=0)
 parser = StrOutputParser()
 
-def generate_answer(question: str, top_k=5):
-    """
-    1) 하이브리드 검색 => 상위 k개 문서
-    2) 문서들을 하나의 context 문자열로 합침
-    3) LLM에 전달하여 답변 생성
-    """
-    hybrid_results = hybrid_search(question, k=top_k)
+def generate_answer(question: str):
+    hybrid_results = hybrid_search(question)
     if not hybrid_results:
-        return "관련 문서를 찾지 못했습니다."
+        return "관련 문서를 찾지 못했습니다.", []
 
-    # context 생성: 문서 내용 + 점수
+    # context 생성
     context_list = []
     for idx, (doc_text, score) in enumerate(hybrid_results, 1):
-        snippet = f"[문서{idx} | 스코어={score:.3f}]\n{doc_text}\n"
+        snippet = f"[문서 {idx} | 스코어={score:.3f}]\n{doc_text}\n"
         context_list.append(snippet)
+
     context_text = "\n\n".join(context_list)
 
-    # RAG 프롬프트
-    prompt_input = {
-        "question": question,
-        "context": context_text
-    }
-    # LLM 호출
-    answer = llm(prompt.format(**prompt_input)).content
+    prompt_input = {"question": question, "context": context_text}
+    result = llm.invoke(prompt.format(**prompt_input))
+    answer = result.content
+
     return answer, hybrid_results
 
 # -----------------------------------------------------------------------------
 # 8) Streamlit 앱
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="세무사 챗봇", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="세무사 챗봇 (하이브리드)", page_icon="🤖", layout="wide")
+st.title("📄 세무사 챗봇 (BM25 + FAISS(MMR) 하이브리드, BM25=0~1 정규화)")
 
-st.title("📄 세무사 챗봇 (BM25 + FAISS 하이브리드)")
-st.write("BM25와 FAISS 점수를 가중합하여 최종 상위 문서를 LLM에 전달합니다.")
+st.write("""
+**하이브리드 검색 순서**  
+1) **BM25** 전 문서 점수 -> **Min-Max 정규화(0~1)** -> 상위 k  
+2) **FAISS(MMR)** top-k (with score)  
+3) 두 점수 가중합(`ALPHA`)  
+4) 최종 상위 k개를 LLM에 전달(RAG)  
+""")
 
 with st.form("chat_form"):
     question = st.text_input(
         "질문을 입력하세요:",
-        placeholder="예: 대학원생인 배우자가 2024년 6월에 연구용역비로 500만원을 받은 경우 배우자공제가 가능해?"
+        placeholder="예: 대학원생인 배우자가 2024년 6월에 연구용역비 500만원을 받은 경우 배우자공제가 가능해?"
     )
     submit_button = st.form_submit_button(label="질문하기")
 
 if submit_button and question.strip():
     with st.spinner("답변 생성 중..."):
-        answer, top_docs = generate_answer(question, top_k=5)
+        answer, top_docs = generate_answer(question)
 
     st.subheader("💡 생성된 답변")
     st.write(answer)
 
-    st.subheader("🔍 참조한 문서 (하이브리드 검색 상위 5개)")
+    st.subheader("🔍 참조한 문서")
     for idx, (doc_text, score) in enumerate(top_docs, start=1):
-        with st.expander(f"문서 {idx} | 점수: {score:.3f}"):
-            st.write(doc_text[:1000])  # 문서가 길 경우 일부만
+        if score >= FINAL_VIEWABLE_DOCUMENT_SCORE:  # ✅ 점수 기준 필터링
+            if "본문:" in doc_text:
+                doc_text = doc_text.replace("본문:", "\n\n본문:")  # ✅ "문서:" 앞에 줄바꿈 2개 추가
+
+            with st.expander(f"문서 {idx} | 점수: {score:.3f}"):
+                st.write(doc_text)  # 문서가 길 경우 일부만 출력
+

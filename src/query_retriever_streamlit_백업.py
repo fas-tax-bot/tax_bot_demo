@@ -10,7 +10,7 @@ from langchain_community.vectorstores import FAISS
 from dotenv import load_dotenv
 
 # ✅ 유사도 임계치 (내적 점수가 0 이상인 문서만 사용)
-FINAL_VIEWABLE_DOCUMENT_SCORE = 0.4
+INNER_PRODUCT_THRESHOLD = 0.4
 
 # .env 파일 로드
 load_dotenv()
@@ -77,15 +77,7 @@ with st.form("chat_form"):
 
 if submit_button and question:
     # ✅ FAISS를 사용하여 문서 검색 (유사도 점수 포함)
-    retrieved_documents_with_scores = vectorstore.similarity_search_with_score(
-        question,
-        search_type="mmr",
-        search_kwargs={
-            "k": 5,          # 최종 반환할 문서 수
-            "fetch_k": 10,   # MMR 계산에 사용할 후보 수
-            "lambda_mult": 0.9
-        }
-    )
+    retrieved_documents_with_scores = vectorstore.similarity_search_with_score(question, k=5)
 
     # 검색된 문서가 없을 경우 처리
     if not retrieved_documents_with_scores:
@@ -100,7 +92,7 @@ if submit_button and question:
         st.write(response)
 
         # ✅ 코사인 유사도 변환 (내적 그대로 사용)
-        filtered_documents = [(doc, distance) for doc, distance in retrieved_documents_with_scores if distance >= FINAL_VIEWABLE_DOCUMENT_SCORE]
+        filtered_documents = [(doc, distance) for doc, distance in retrieved_documents_with_scores if distance >= INNER_PRODUCT_THRESHOLD]
 
         # ✅ 참조한 문서 출력
         st.subheader("🔍 참조한 문서")
