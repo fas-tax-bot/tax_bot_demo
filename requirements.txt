@@ -6,3 +6,4 @@ langchain-openai
 faiss-cpu
 python-dotenv
 streamlit
+BM25Okapi
