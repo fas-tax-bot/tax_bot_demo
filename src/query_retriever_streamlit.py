@@ -19,7 +19,7 @@ from langchain_community.vectorstores import FAISS
 ALPHA = 0   # BM25와 FAISS 비중 (0 => FAISS 100%, 1 => BM25 100%)
 RAG_TOP_K = 5      # 최종적으로 LLM(RAG)에 전달할 문서 개수
 BM25_TOP_K = RAG_TOP_K // 2     # BM25 검색에서 상위 몇 개를 선택할지
-FAISS_TOP_K = 10    # FAISS(MMR)에서 상위 몇 개를 선택할지
+FAISS_TOP_K = 5    # FAISS(MMR)에서 상위 몇 개를 선택할지
 FINAL_VIEWABLE_DOCUMENT_SCORE = 0.5 # 보여지는 문서의 기준점수
 
 # -----------------------------------------------------------------------------
@@ -180,15 +180,8 @@ def generate_answer(question: str):
 # 8) Streamlit 앱
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="세무사 챗봇 (하이브리드)", page_icon="🤖", layout="wide")
-st.title("📄 세무사 챗봇 (BM25 + FAISS(MMR) 하이브리드, BM25=0~1 정규화)")
+st.title("📄 세무사 챗봇")
 
-st.write("""
-**하이브리드 검색 순서**  
-1) **BM25** 전 문서 점수 -> **Min-Max 정규화(0~1)** -> 상위 k  
-2) **FAISS(MMR)** top-k (with score)  
-3) 두 점수 가중합(`ALPHA`)  
-4) 최종 상위 k개를 LLM에 전달(RAG)  
-""")
 
 with st.form("chat_form"):
     question = st.text_input(
