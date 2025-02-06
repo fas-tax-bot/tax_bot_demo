@@ -17,7 +17,7 @@ from sklearn.preprocessing import normalize
 # ---------------------------------------------------------------------------
 FETCH_K = 100
 TOP_K = 5
-THRESHOLD = 0.5  # 임계값 상수
+THRESHOLD = 0.6  # 임계값 상수
 
 # ---------------------------------------------------------------------------
 # 1) .env 설정
@@ -157,24 +157,29 @@ def generate_answer(question: str):
     Hybrid Search 후 상위 TOP_K개의 문서를 context로 하여 GPT-4에 전송
     """
     hybrid_results = hybrid_search(question)
-    if not hybrid_results:
-        return "관련 문서를 찾지 못했습니다.", []
-
-    # 상위 TOP_K개 문서로 context 생성
-    top_docs = hybrid_results[:TOP_K]
-    context_list = []
-    for idx, (doc_text, score, bm25_score, faiss_score) in enumerate(top_docs, start=1):
-        snippet = f"[문서 {idx} | Hybrid 점수={score:.3f} | BM25={bm25_score:.3f} | FAISS={faiss_score:.3f}]\n{doc_text}\n"
-        context_list.append(snippet)
-    context_text = "\n\n".join(context_list)
     
-    # Prompt 생성 및 GPT-4 호출
+    # GPT에 전달할 컨텍스트 생성 (THRESHOLD 이상 문서만 포함)
+    top_docs = [doc for doc in hybrid_results[:TOP_K] if doc[1] >= THRESHOLD]
+
+    if not top_docs:
+        # 🔹 문서를 찾지 못했을 때 GPT에게 기본 메시지를 전달하도록 설정
+        context_text = "관련 문서를 찾지 못했습니다. 너가 아는 내용으로 대답해줘"
+    else:
+        # 🔹 정상적으로 문서를 찾았을 경우 문서 리스트 생성
+        context_list = []
+        for idx, (doc_text, score, bm25_score, faiss_score) in enumerate(top_docs, start=1):
+            snippet = f"[문서 {idx} | Hybrid 점수={score:.3f} | BM25={bm25_score:.3f} | FAISS={faiss_score:.3f}]\n{doc_text}\n"
+            context_list.append(snippet)
+        context_text = "\n\n".join(context_list)
+    
+    # 🔹 Prompt 생성 및 GPT-4 호출
     prompt_input = {"question": question, "context": context_text}
     final_prompt = prompt.format(**prompt_input)
     result = llm.invoke(final_prompt)
     answer = result.content
 
-    return answer, hybrid_results  # hybrid_results 전체 반환
+    return answer, top_docs  # 필터링된 문서 리스트 반환
+
 
 # ---------------------------------------------------------------------------
 # 7) Streamlit UI + 검색 결과 엑셀 저장
