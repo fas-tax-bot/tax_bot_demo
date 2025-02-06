@@ -39,8 +39,8 @@ for file, sheets in excel_files:
             
             # content는 제목과 본문_원본을 포함
             content = f"제목: {row['제목']}\n본문: {row['본문_원본']}"
-            source = f"" if "data_source" in file else f"{file} - {sheet}"
-            
+            source = f"{file.replace('data_source/', '')}__{sheet}"
+
             # metadata에 모든 헤더 정보를 포함
             metadata = {
                 "파일명": row["파일명"],

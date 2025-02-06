@@ -10,12 +10,14 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
-from sklearn.preprocessing import normalize  # StandardScaler 제거
+from sklearn.preprocessing import normalize
 
 # ---------------------------------------------------------------------------
 # 0)  상수 설정
 # ---------------------------------------------------------------------------
-TOP_K = 574  # 검색 결과를 전체 문서 개수만큼 (577)
+FETCH_K = 100
+TOP_K = 5
+THRESHOLD = 0.5  # 임계값 상수
 
 # ---------------------------------------------------------------------------
 # 1) .env 설정
@@ -84,44 +86,41 @@ sparse_index.add(bm25_scores_matrix)
 def hybrid_search(query: str, alpha=0.5):
     """
     1) BM25 전체 문서 유사도 계산
-    2) Dense 임베딩 검색 (TOP_K)
+    2) Dense 임베딩 검색 (FETCH_K개 문서를 검색)
     3) 두 스코어를 min-max 정규화한 후 선형 결합하여 최종 상위 문서를 반환
     """
     tokenized_query = query.split()
 
-    # BM25 스코어 계산 (원시 점수를 그대로 사용)
+    # BM25 스코어 계산 및 정규화
     bm25_scores = np.array(bm25.get_scores(tokenized_query))
-    # StandardScaler 제거: 원시 점수를 그대로 사용함
     bm25_scores_norm = bm25_scores
 
-    # 임베딩 검색
+    # 임베딩 검색 (FETCH_K개 문서 검색)
     query_embedding = embedding_model.embed_query(query)
-    D, I = dense_index.search(np.array([query_embedding]), TOP_K)
+    D, I = dense_index.search(np.array([query_embedding]), FETCH_K)
 
-    # 거리 -> 유사도로 변환 (유사도는 [0, 1] 범위에 가까움)
+    # 거리 -> 유사도로 변환 (유사도는 [0, 1] 범위에 가깝게)
     similarity_scores = 1 - (D / np.max(D))
     similarity_scores = similarity_scores.flatten()
 
-    # BM25에서 FAISS 검색된 문서만 선택
+    # BM25에서 dense 검색으로 반환된 문서 인덱스에 해당하는 BM25 스코어 선택
     selected_bm25_scores = bm25_scores_norm[I[0]]
 
-    # BM25 스코어의 음수를 없애기 위해 최소값의 절대값을 더함
+    # BM25 스코어의 음수 제거 (최소값의 절대값을 더함)
     min_bm25_score = np.min(selected_bm25_scores)
     selected_bm25_scores = selected_bm25_scores + abs(min_bm25_score)
 
     # --- 두 스코어에 대해 min-max 정규화 진행 ---
-    # BM25 스코어 정규화
     sb_min = np.min(selected_bm25_scores)
     sb_max = np.max(selected_bm25_scores)
     selected_bm25_scores = (selected_bm25_scores - sb_min) / (sb_max - sb_min + 1e-8)
 
-    # similarity_scores 정규화
     sim_min = np.min(similarity_scores)
     sim_max = np.max(similarity_scores)
     similarity_scores = (similarity_scores - sim_min) / (sim_max - sim_min + 1e-8)
     # --------------------------------------------
 
-    # Hybrid 점수 계산 (두 스코어 모두 [0, 1] 범위를 가지게 됨)
+    # Hybrid 점수 계산 (두 스코어 모두 [0, 1] 범위)
     hybrid_score = alpha * selected_bm25_scores + (1 - alpha) * similarity_scores
     sorted_indices = np.argsort(-hybrid_score)
     
@@ -151,16 +150,16 @@ parser = StrOutputParser()
 
 def generate_answer(question: str):
     """
-    Hybrid Search 후 상위 10개의 문서를 context로 하여 GPT-4에 전송
+    Hybrid Search 후 상위 TOP_K개의 문서를 context로 하여 GPT-4에 전송
     """
     hybrid_results = hybrid_search(question)
     if not hybrid_results:
         return "관련 문서를 찾지 못했습니다.", []
 
-    # 상위 10개 문서로 context 생성
-    top_10_docs = hybrid_results[:10]
+    # 상위 TOP_K개 문서로 context 생성
+    top_docs = hybrid_results[:TOP_K]
     context_list = []
-    for idx, (doc_text, score, bm25_score, faiss_score) in enumerate(top_10_docs, start=1):
+    for idx, (doc_text, score, bm25_score, faiss_score) in enumerate(top_docs, start=1):
         snippet = f"[문서 {idx} | Hybrid 점수={score:.3f} | BM25={bm25_score:.3f} | FAISS={faiss_score:.3f}]\n{doc_text}\n"
         context_list.append(snippet)
     context_text = "\n\n".join(context_list)
@@ -181,21 +180,23 @@ st.write("질문을 입력하면 AI가 문서를 참조하여 답변드립니다
 
 with st.form("chat_form"):
     question = st.text_input("질문을 입력하세요:", placeholder="예: 배우자가 연구용역비를 받은 경우 배우자공제가 가능합니까?")
-    # alpha = st.slider("Hybrid 가중치 (BM25 vs Dense)", 0.0, 1.0, 0.5, 0.1)
     submit_button = st.form_submit_button(label="질문하기")
 
 if submit_button and question.strip():
     with st.spinner("답변 생성 중..."):
-        answer, top_docs = generate_answer(question)
+        answer, hybrid_results = generate_answer(question)
 
     st.subheader("💡 생성된 답변")
     st.write(answer)
 
-    st.subheader("🔍 참조한 문서 (상위 10건)")
-    for idx, (doc_text, score, bm25_score, faiss_score) in enumerate(top_docs[:10], start=1):
-        with st.expander(f"문서 {idx} | Hybrid 점수: {score:.3f}"):
-            st.write(doc_text[:2000])  # 문서가 길 경우 일부만 출력
-
+    # TOP_K 문서 중 임계값 이상의 hybrid 점수를 가진 문서만 필터링
+    filtered_docs = [doc for doc in hybrid_results[:TOP_K] if doc[1] >= THRESHOLD]
+    if filtered_docs:
+        st.subheader("🔍 참조한 문서")
+        for idx, (doc_text, score, bm25_score, faiss_score) in enumerate(filtered_docs, start=1):
+            with st.expander(f"문서 {idx} | Hybrid 점수: {score:.3f}"):
+                st.write(doc_text[:2000])  # 문서가 길 경우 일부만 출력
+                
     # # 검색된 모든 문서를 엑셀로 저장
     # import re
     # safe_question = re.sub(r'[\\/:*?"<>|]', '_', question)
@@ -204,12 +205,13 @@ if submit_button and question.strip():
     # save_path = os.path.join(desktop_path, "RAG_엑셀", excel_filename)
 
     # df = pd.DataFrame({
-    #     "질문": [question] * len(top_docs),
-    #     "문서내용": [doc for (doc, _, _, _) in top_docs],
-    #     "Hybrid 점수": [hybrid for (_, hybrid, _, _) in top_docs],
-    #     "BM25 점수": [bm25 for (_, _, bm25, _) in top_docs],
-    #     "FAISS 유사도 점수": [faiss for (_, _, _, faiss) in top_docs],
+    #     "질문": [question] * len(filtered_docs),
+    #     "문서내용": [doc for (doc, _, _, _) in filtered_docs],
+    #     "Hybrid 점수": [hybrid for (_, hybrid, _, _) in filtered_docs],
+    #     "BM25 점수": [bm25 for (_, _, bm25, _) in filtered_docs],
+    #     "FAISS 유사도 점수": [faiss for (_, _, _, faiss) in filtered_docs],
     # })
 
     # df.to_excel(save_path, index=False)
     # st.success(f"검색된 문서 전체를 엑셀로 저장했습니다: {save_path}")
+
