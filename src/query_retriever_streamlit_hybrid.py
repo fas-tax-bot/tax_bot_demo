@@ -36,11 +36,15 @@ def load_bm25_index():
     excel_file = "data_source/세무사 데이터전처리_20250116.xlsx"
     df = pd.read_excel(excel_file)
 
-    bm25_documents = df.apply(lambda row: f"{row['제목']} {row['본문_원본']}", axis=1).tolist()
+    # 원본 텍스트 (줄바꿈 포함)
+    bm25_documents = df.apply(lambda row: f"제목: {row['제목']}\n\n본문: {row['본문_원본']}", axis=1).tolist()
+
+    # BM25 토큰화를 위해서는 줄바꿈과 상관없이 단어 단위로 분리
     bm25_tokenized_docs = [doc.split() for doc in bm25_documents]
     bm25 = BM25Okapi(bm25_tokenized_docs)
 
     print(f"✅ BM25 문서 개수: {len(bm25_documents)}")
+
     return bm25, bm25_documents
 
 bm25, bm25_documents = load_bm25_index()
