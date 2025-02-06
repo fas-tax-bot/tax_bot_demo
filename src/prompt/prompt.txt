@@ -38,10 +38,3 @@ prompt_text = """
 {context}
 # Final answer to the question:
  """
-
-
-
-
-
-
- 

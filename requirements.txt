@@ -7,3 +7,4 @@ faiss-cpu
 python-dotenv
 streamlit
 rank_bm25
+scikit-learn

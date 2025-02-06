@@ -10,7 +10,7 @@ from langchain_community.vectorstores import FAISS
 from dotenv import load_dotenv
 
 # ✅ 유사도 임계치 (내적 점수가 0 이상인 문서만 사용)
-FINAL_VIEWABLE_DOCUMENT_SCORE = 0.4
+FINAL_VIEWABLE_DOCUMENT_SCORE = 0.1
 
 # .env 파일 로드
 load_dotenv()
