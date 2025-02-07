@@ -26,18 +26,18 @@ if missing_vars:
 os.environ["OPENAI_API_KEY"] = api_key
 THREADS_FILE = "src/threads.json"  # 스레드 정보 저장 파일
 
-# 🔹 저장된 스레드 목록 불러오기
+#  저장된 스레드 목록 불러오기
 def load_threads():
     if os.path.exists(THREADS_FILE):
         with open(THREADS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return []
 
-# 🔹 사람이 읽을 수 있는 KST 시간 변환 함수
+#  사람이 읽을 수 있는 KST 시간 변환 함수
 def convert_to_kst(timestamp):
     return time.strftime('%Y-%m-%d %H:%M:%S KST', time.localtime(timestamp + 9 * 3600))  # UTC+9
 
-# 🔹 새 Thread 생성 및 ID 반환 (생성된 시간과 함께 저장)
+#  새 Thread 생성 및 ID 반환 (생성된 시간과 함께 저장)
 def create_new_thread():
     thread_id = openai.beta.threads.create().id
     # created_at_timestamp = int(time.time())  # 현재 Unix Timestamp 저장
@@ -56,7 +56,7 @@ def create_new_thread():
     return thread_id
 
 
-# 🔹 thread_id로 메시지 전송 후 run 반환
+#  thread_id로 메시지 전송 후 run 반환
 def submit_message(assistant_id, thread_id, user_message):
     openai.beta.threads.messages.create(
         thread_id=thread_id,
@@ -70,7 +70,7 @@ def submit_message(assistant_id, thread_id, user_message):
     return run
 
 
-# 🔹 thread_id의 run 상태 확인
+#  thread_id의 run 상태 확인
 def wait_on_run(run, thread_id):
     while run.status in ["queued", "in_progress"]:
         run = openai.beta.threads.runs.retrieve(
@@ -80,27 +80,42 @@ def wait_on_run(run, thread_id):
         time.sleep(0.5)
     return run
 
-# 🔹 Assistant의 답변에서 【 】로 감싸진 특정 텍스트 제거
+
+#  Assistant의 답변에서 【 】로 감싸진 특정 텍스트 처리
 def clean_special_brackets(messages):
     """
-    Assistant의 답변 중 【 】로 감싸진 텍스트를 찾아,
-    내부의 글자 수가 9~12글자인 경우 해당 텍스트를 삭제합니다.
+    Assistant의 답변 중 【 】로 감싸진 텍스트를 처리:
+    1. 내부에 한글이 포함된 경우:
+        - 【와 † 사이의 글자와 †를 삭제.
+    2. 내부에 한글이 포함되지 않은 경우:
+        - 【 】 전체를 삭제 (내용 포함).
     """
     for message in messages:
         if message["role"] == "assistant":
             # 【 】로 감싸진 텍스트를 찾는 정규식
-            pattern = r"【(.{9,12})】"
-            # 조건에 맞는 텍스트를 제거
-            cleaned_message = re.sub(pattern, "", message["message"])
+            pattern = r"【(.*?)】"
+
+            def replacer(match):
+                content = match.group(1)  # 【 】 내부 내용
+                if re.search(r"[가-힣]", content):  # 내부에 한글이 포함된 경우
+                    # 【와 † 사이의 글자 및 † 삭제
+                    return re.sub(r"^(.*?)†", "", f"【{content}】")
+                else:
+                    # 한글이 포함되지 않은 경우 【 】 전체 삭제
+                    return ""
+
+            # 정규식 적용
+            cleaned_message = re.sub(pattern, replacer, message["message"])
             message["message"] = cleaned_message.strip()  # 양쪽 공백 제거
+
             
-# 🔹 스레드의 run 상태가 완료되었을 때 응답 메시지 가져오기
+#  스레드의 run 상태가 완료되었을 때 응답 메시지 가져오기
 def get_response(thread_id):
     return openai.beta.threads.messages.list(thread_id=thread_id, order="asc")
 
 
 
-# 🔹 메시지 처리 함수 (외부 파일에서도 호출 가능)
+#  메시지 처리 함수 (외부 파일에서도 호출 가능)
 def process_message(user_message, thread_id=None):
     """ 사용자 질문을 처리하고 응답을 JSON 형태로 반환하는 함수 """
     
@@ -129,12 +144,12 @@ def process_message(user_message, thread_id=None):
             content_text = res.content[0].text.value if hasattr(res.content[0], "text") else res.content[0]
             conversation_data["messages"].append({"role": role, "message": content_text})
 
-    # 🔹 【 】로 감싸진 텍스트 처리
+    #  【 】로 감싸진 텍스트 처리
     clean_special_brackets(conversation_data["messages"])
     
     return json.dumps(conversation_data, ensure_ascii=False, indent=4)  # JSON 문자열 반환
 
-# 🔹 스레드 목록 출력 함수
+#  스레드 목록 출력 함수
 def list_threads():
     threads = load_threads()
     if not threads:
@@ -145,7 +160,7 @@ def list_threads():
     for t in threads:
         print(f"- Thread ID: {t['thread_id']}, 생성일: {t['created_at']}")
 
-# 🔹 직접 실행할 때만 main() 실행
+#  직접 실행할 때만 main() 실행
 if __name__ == "__main__":
     USER_MESSAGE = str(input("Query를 입력하세요: "))
     print(process_message(USER_MESSAGE))
