@@ -5,8 +5,10 @@ import openai
 import re
 from dotenv import load_dotenv
 
-# .env 파일 로드
-load_dotenv()
+# ---------------------------------------------------------------------------
+# 1) 환경 변수 로드 및 설정
+# ---------------------------------------------------------------------------
+load_dotenv()  # .env 파일 로드
 
 # 환경 변수 불러오기
 api_key = os.getenv("OPENAI_ASSISTANT_API_KEY")
@@ -26,38 +28,41 @@ if missing_vars:
 os.environ["OPENAI_API_KEY"] = api_key
 THREADS_FILE = "src/threads.json"  # 스레드 정보 저장 파일
 
-#  저장된 스레드 목록 불러오기
+# ---------------------------------------------------------------------------
+# 2) 스레드 관리 관련 함수
+# ---------------------------------------------------------------------------
+
+# 🔹 저장된 스레드 목록 불러오기
 def load_threads():
+    """JSON 파일에서 저장된 스레드 목록을 불러옵니다."""
     if os.path.exists(THREADS_FILE):
         with open(THREADS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return []
 
-#  사람이 읽을 수 있는 KST 시간 변환 함수
+# 🔹 사람이 읽을 수 있는 KST 시간 변환 함수
 def convert_to_kst(timestamp):
-    return time.strftime('%Y-%m-%d %H:%M:%S KST', time.localtime(timestamp + 9 * 3600))  # UTC+9
+    """UTC 시간을 KST(한국 표준시)로 변환합니다."""
+    return time.strftime('%Y-%m-%d %H:%M:%S KST', time.localtime(timestamp + 9 * 3600))
 
-#  새 Thread 생성 및 ID 반환 (생성된 시간과 함께 저장)
+# 🔹 새 Thread 생성 및 ID 반환 (생성된 시간과 함께 저장)
 def create_new_thread():
+    """
+    OpenAI API를 사용해 새로운 스레드를 생성합니다.
+    생성된 스레드 ID를 반환합니다.
+    """
     thread_id = openai.beta.threads.create().id
-    # created_at_timestamp = int(time.time())  # 현재 Unix Timestamp 저장
-    # created_at = convert_to_kst(created_at_timestamp)  # 사람이 읽을 수 있는 KST 변환
-
-    # # 기존 스레드 불러오기
-    # threads = load_threads()
-    
-    # # 새 스레드 추가
-    # threads.append({"thread_id": thread_id, "created_at": created_at})
-
-    # # JSON 파일에 저장
-    # with open(THREADS_FILE, "w", encoding="utf-8") as f:
-    #     json.dump(threads, f, ensure_ascii=False, indent=4)
-
     return thread_id
 
+# ---------------------------------------------------------------------------
+# 3) 메시지 전송 및 응답 처리 관련 함수
+# ---------------------------------------------------------------------------
 
-#  thread_id로 메시지 전송 후 run 반환
+# 🔹 thread_id로 메시지 전송 후 run 반환
 def submit_message(assistant_id, thread_id, user_message):
+    """
+    주어진 thread_id에 사용자의 메시지를 전송하고 실행(run)을 시작합니다.
+    """
     openai.beta.threads.messages.create(
         thread_id=thread_id,
         role="user",
@@ -69,9 +74,11 @@ def submit_message(assistant_id, thread_id, user_message):
     )
     return run
 
-
-#  thread_id의 run 상태 확인
+# 🔹 thread_id의 run 상태 확인
 def wait_on_run(run, thread_id):
+    """
+    실행 중인 run의 상태를 확인하고, 'completed' 상태가 될 때까지 대기합니다.
+    """
     while run.status in ["queued", "in_progress"]:
         run = openai.beta.threads.runs.retrieve(
             thread_id=thread_id,
@@ -80,8 +87,18 @@ def wait_on_run(run, thread_id):
         time.sleep(0.5)
     return run
 
+# 🔹 스레드의 run 상태가 완료되었을 때 응답 메시지 가져오기
+def get_response(thread_id):
+    """
+    주어진 thread_id에서 실행 완료된 메시지 리스트를 가져옵니다.
+    """
+    return openai.beta.threads.messages.list(thread_id=thread_id, order="asc")
 
-#  Assistant의 답변에서 【 】로 감싸진 특정 텍스트 처리
+# ---------------------------------------------------------------------------
+# 4) Assistant의 답변에서 특수 텍스트 처리
+# ---------------------------------------------------------------------------
+
+# 🔹 Assistant의 답변에서 【 】로 감싸진 특정 텍스트 처리
 def clean_special_brackets(messages):
     """
     Assistant의 답변 중 【 】로 감싸진 텍스트를 처리:
@@ -108,21 +125,19 @@ def clean_special_brackets(messages):
             cleaned_message = re.sub(pattern, replacer, message["message"])
             message["message"] = cleaned_message.strip()  # 양쪽 공백 제거
 
-            
-#  스레드의 run 상태가 완료되었을 때 응답 메시지 가져오기
-def get_response(thread_id):
-    return openai.beta.threads.messages.list(thread_id=thread_id, order="asc")
+# ---------------------------------------------------------------------------
+# 5) 메시지 처리 함수
+# ---------------------------------------------------------------------------
 
-
-
-#  메시지 처리 함수 (외부 파일에서도 호출 가능)
+# 🔹 메시지 처리 함수 (외부 파일에서도 호출 가능)
 def process_message(user_message, thread_id=None):
-    """ 사용자 질문을 처리하고 응답을 JSON 형태로 반환하는 함수 """
-    
+    """
+    사용자 질문을 처리하고 응답을 JSON 형태로 반환하는 함수.
+    기존 thread_id가 없다면 새 스레드를 생성합니다.
+    """
     # 기존 스레드 사용 여부 결정
     if not thread_id:
         thread_id = create_new_thread()
-        # print(f"🔹 새 THREAD_ID 생성: {thread_id}")
     else:
         print(f"🔹 기존 THREAD_ID 사용: {thread_id}")
     
@@ -149,8 +164,15 @@ def process_message(user_message, thread_id=None):
     
     return json.dumps(conversation_data, ensure_ascii=False, indent=4)  # JSON 문자열 반환
 
-#  스레드 목록 출력 함수
+# ---------------------------------------------------------------------------
+# 6) 스레드 목록 출력 함수
+# ---------------------------------------------------------------------------
+
+# 🔹 스레드 목록 출력 함수
 def list_threads():
+    """
+    저장된 스레드 목록을 출력합니다.
+    """
     threads = load_threads()
     if not threads:
         print("🔹 현재 존재하는 스레드가 없습니다.")
@@ -160,7 +182,11 @@ def list_threads():
     for t in threads:
         print(f"- Thread ID: {t['thread_id']}, 생성일: {t['created_at']}")
 
-#  직접 실행할 때만 main() 실행
+# ---------------------------------------------------------------------------
+# 7) 직접 실행
+# ---------------------------------------------------------------------------
+
+# 🔹 직접 실행할 때만 main() 실행
 if __name__ == "__main__":
     USER_MESSAGE = str(input("Query를 입력하세요: "))
     print(process_message(USER_MESSAGE))
