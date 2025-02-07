@@ -48,7 +48,7 @@ vectorstore.index.metric_type = faiss.METRIC_INNER_PRODUCT  # 무조건 내적 �
 # ✅ MMR 검색 적용
 retriever = vectorstore.as_retriever(
     search_type='mmr',
-    search_kwargs={'k': 5, 'fetch_k': 10, 'lambda_mult': 0.9}
+    search_kwargs={'k': 5, 'fetch_k': 10, 'lambda_mult': 1}
 )
 
 # ✅ RAG 구성 요소 설정
@@ -83,7 +83,7 @@ if submit_button and question:
         search_kwargs={
             "k": 5,          # 최종 반환할 문서 수
             "fetch_k": 10,   # MMR 계산에 사용할 후보 수
-            "lambda_mult": 0.9
+            "lambda_mult": 1
         }
     )
 
