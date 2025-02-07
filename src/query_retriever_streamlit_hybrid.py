@@ -17,7 +17,7 @@ from sklearn.preprocessing import normalize
 # ---------------------------------------------------------------------------
 FETCH_K = 100
 TOP_K = 5
-THRESHOLD = 0.6  # 임계값 상수
+THRESHOLD = 0.51  # 임계값 상수
 
 # ---------------------------------------------------------------------------
 # 1) .env 설정
@@ -36,7 +36,7 @@ def load_bm25_index():
     excel_file = "data_source/세무사 데이터전처리_20250116.xlsx"
     df = pd.read_excel(excel_file)
 
-    # 원본 텍스트 (줄바꿈 포함)
+    # 원본 텍스트 (줄바꿈 포함, 제목과 본문 앞에 라벨 추가)
     bm25_documents = df.apply(lambda row: f"제목: {row['제목']}\n\n본문: {row['본문_원본']}", axis=1).tolist()
 
     # BM25 토큰화를 위해서는 줄바꿈과 상관없이 단어 단위로 분리
@@ -44,7 +44,6 @@ def load_bm25_index():
     bm25 = BM25Okapi(bm25_tokenized_docs)
 
     print(f"✅ BM25 문서 개수: {len(bm25_documents)}")
-
     return bm25, bm25_documents
 
 bm25, bm25_documents = load_bm25_index()
@@ -68,7 +67,6 @@ def load_embedding_index():
         print("❌ FAISS 인덱스 파일 없음, 새로 생성 필요")
         vectorstore = FAISS.from_documents([], embedding_model)
         vectorstore.save_local("vdb/faiss_index")
-
     return vectorstore
 
 vectorstore = load_embedding_index()
@@ -155,31 +153,30 @@ parser = StrOutputParser()
 def generate_answer(question: str):
     """
     Hybrid Search 후 상위 TOP_K개의 문서를 context로 하여 GPT-4에 전송
+    GPT 프롬프트에는 TOP_K개 중 THRESHOLD 이상의 문서만 포함하고,
+    엑셀 저장 시에는 FETCH_K개 (dense 검색 결과 전체)를 저장합니다.
     """
     hybrid_results = hybrid_search(question)
     
     # GPT에 전달할 컨텍스트 생성 (THRESHOLD 이상 문서만 포함)
     top_docs = [doc for doc in hybrid_results[:TOP_K] if doc[1] >= THRESHOLD]
-
     if not top_docs:
-        # 🔹 문서를 찾지 못했을 때 GPT에게 기본 메시지를 전달하도록 설정
         context_text = "관련 문서를 찾지 못했습니다. 너가 아는 내용으로 대답해줘"
     else:
-        # 🔹 정상적으로 문서를 찾았을 경우 문서 리스트 생성
         context_list = []
         for idx, (doc_text, score, bm25_score, faiss_score) in enumerate(top_docs, start=1):
             snippet = f"[문서 {idx} | Hybrid 점수={score:.3f} | BM25={bm25_score:.3f} | FAISS={faiss_score:.3f}]\n{doc_text}\n"
             context_list.append(snippet)
         context_text = "\n\n".join(context_list)
     
-    # 🔹 Prompt 생성 및 GPT-4 호출
+    # Prompt 생성 및 GPT-4 호출
     prompt_input = {"question": question, "context": context_text}
     final_prompt = prompt.format(**prompt_input)
     result = llm.invoke(final_prompt)
     answer = result.content
 
-    return answer, top_docs  # 필터링된 문서 리스트 반환
-
+    # GPT 프롬프트용 문서(top_docs)와 엑셀 저장용 전체 문서(hybrid_results)를 모두 반환
+    return answer, hybrid_results
 
 # ---------------------------------------------------------------------------
 # 7) Streamlit UI + 검색 결과 엑셀 저장
@@ -198,15 +195,15 @@ if submit_button and question.strip():
     st.subheader("💡 생성된 답변")
     st.write(answer)
 
-    # TOP_K 문서 중 임계값 이상의 hybrid 점수를 가진 문서만 필터링
+    # TOP_K 문서 중 임계값 이상의 hybrid 점수를 가진 문서만 화면에 표시
     filtered_docs = [doc for doc in hybrid_results[:TOP_K] if doc[1] >= THRESHOLD]
     if filtered_docs:
         st.subheader("🔍 참조한 문서")
         for idx, (doc_text, score, bm25_score, faiss_score) in enumerate(filtered_docs, start=1):
             with st.expander(f"문서 {idx} | Hybrid 점수: {score:.3f}"):
                 st.write(doc_text[:2000])  # 문서가 길 경우 일부만 출력
-                
-    # # 검색된 모든 문서를 엑셀로 저장
+
+    # # 엑셀에는 FETCH_K개 문서 (dense 검색 결과 전체)를 저장
     # import re
     # safe_question = re.sub(r'[\\/:*?"<>|]', '_', question)
     # desktop_path = os.path.join(os.path.expanduser("~"), "바탕화면")
@@ -214,13 +211,12 @@ if submit_button and question.strip():
     # save_path = os.path.join(desktop_path, "RAG_엑셀", excel_filename)
 
     # df = pd.DataFrame({
-    #     "질문": [question] * len(filtered_docs),
-    #     "문서내용": [doc for (doc, _, _, _) in filtered_docs],
-    #     "Hybrid 점수": [hybrid for (_, hybrid, _, _) in filtered_docs],
-    #     "BM25 점수": [bm25 for (_, _, bm25, _) in filtered_docs],
-    #     "FAISS 유사도 점수": [faiss for (_, _, _, faiss) in filtered_docs],
+    #     "질문": [question] * len(hybrid_results),
+    #     "문서내용": [doc for (doc, _, _, _) in hybrid_results],
+    #     "Hybrid 점수": [hybrid for (_, hybrid, _, _) in hybrid_results],
+    #     "BM25 점수": [bm25 for (_, _, bm25, _) in hybrid_results],
+    #     "FAISS 유사도 점수": [faiss for (_, _, _, faiss) in hybrid_results],
     # })
 
     # df.to_excel(save_path, index=False)
     # st.success(f"검색된 문서 전체를 엑셀로 저장했습니다: {save_path}")
-
